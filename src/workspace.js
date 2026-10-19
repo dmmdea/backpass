@@ -352,6 +352,7 @@ export function skillStagingRefusal(
 /** Why measurement dropped a file the model wrote: the note the human reads must say which. */
 export const STRAY_OUTSIDE_SURFACE = "synthesis wrote it outside the memory file and skills";
 export const STRAY_OUTSIDE_REPO = "it resolves outside the repository, which project scope cannot write";
+export const STRAY_VCS = "synthesis wrote version-control internals, which are never carried or applied";
 export const strayAliasReason = (owner) => `it is the same file already staged as ${owner}`;
 export const STRAY_UNWRITABLE =
   "it resolves to a location that cannot be written, so staging withheld it from the copy";
@@ -548,7 +549,9 @@ export function measureWorkspace(workspace) {
   const stray = [];
   const texts = new Map();
 
-  const present = new Set(walkFiles(root).map((p) => p.split(path.sep).join("/")));
+  // Staging never copies a VCS entry, so any the walk prunes here was written by synthesis.
+  const skipped = [];
+  const present = new Set(walkFiles(root, "", null, skipped).map((p) => p.split(path.sep).join("/")));
 
   const ordered = [memoryPath, ...[...originals.keys()].filter((f) => f !== memoryPath).sort()];
   for (const logical of ordered) {
@@ -574,20 +577,31 @@ export function measureWorkspace(workspace) {
     { logical: path.dirname(memoryPath), staged: path.posix.dirname(memoryStaged) },
   ];
 
+  const mappingFor = (staged) => dirMappings.find(({ staged: dir }) => staged === dir || staged.startsWith(`${dir}/`));
+  // Every note names the path the reader knows - the repository path, or the real one a
+  // user-scope entry resolves to - never the `.external/<hash>` the staging copy uses.
+  const logicalFor = (mapping, staged) => {
+    const inside = staged.slice(mapping.staged.length).replace(/^\//, "");
+    return path.isAbsolute(mapping.logical)
+      ? path.join(mapping.logical, inside)
+      : path.posix.join(mapping.logical, inside);
+  };
+
+  for (const { relative } of skipped.sort((a, b) => a.relative.localeCompare(b.relative))) {
+    const mapping = mappingFor(relative);
+    stray.push({ file: mapping ? logicalFor(mapping, relative) : relative, reason: STRAY_VCS });
+  }
+
   const knownStaged = new Set(stagedPaths.values());
   for (const staged of [...present].sort()) {
     if (knownStaged.has(staged)) continue;
-    const mapping = dirMappings.find(({ staged: dir }) => staged === dir || staged.startsWith(`${dir}/`));
+    const mapping = mappingFor(staged);
     if (!mapping) {
       stray.push({ file: staged, reason: STRAY_OUTSIDE_SURFACE });
       continue;
     }
     const inside = staged.slice(mapping.staged.length).replace(/^\//, "");
-    // Every note names the path the reader knows - the repository path, or the real one a
-    // user-scope entry resolves to - never the `.external/<hash>` the staging copy uses.
-    const logical = path.isAbsolute(mapping.logical)
-      ? path.join(mapping.logical, inside)
-      : path.posix.join(mapping.logical, inside);
+    const logical = logicalFor(mapping, staged);
     if (!isSkillFilePath(logical, skillDirs)) {
       stray.push({ file: logical, reason: STRAY_OUTSIDE_SURFACE });
       continue;
