@@ -467,7 +467,8 @@ A high-reasoning synthesis run turns the aggregated gradients into concrete edit
 REMOVE, REWRITE, EXTRACT→SKILL, or MOVE. The agent does not describe edits for backpass to
 splice in - it makes them, with its harness's own file tools, in a **staging copy** of the
 memory file and project skills under `.backpass/synthesis/` (the repo itself is read-only
-to it, for grounding). Named nested files use their own staging copies and do not stage skills
+to it, for grounding). Version-control internals (`.git`, `.hg`, `.svn`) and binary files
+under a skill directory stay out of the copy and are read-only. Named nested files use their own staging copies and do not stage skills
 (see [Nested memory files](#10-nested-memory-files-in-a-monorepo)). backpass then diffs
 against the originals and shows the agent the measured changes by id; the agent annotates each one with a title, rationale, and the
 verbatim evidence behind it. Nothing textual is ever taken from the model: every hunk's

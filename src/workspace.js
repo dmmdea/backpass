@@ -19,6 +19,10 @@ import { sha256 } from "./state.js";
  * The agent reads the real repository by absolute path for grounding; what it changes in
  * the copy is measured here (`measureWorkspace`) and becomes the proposal the human
  * reviews. The copy is wiped and rebuilt on every synthesis.
+ *
+ * Version-control internals and binary files are not the memory surface, so they stay out
+ * of the copy and each is named in `unstageable` with its reason (#75): a skill that ships
+ * its own `.git` or compiled tools must not turn staging into a copy of the whole store.
  */
 
 export const WORKSPACE_DIRNAME = "synthesis";
@@ -107,6 +111,13 @@ export function prepareWorkspace({
         unstageable.push({ path: logical, reason: `the same file is already staged as ${owner}` });
         continue;
       }
+      // `originals` holds every staged file as utf-8 text, and a binary does not survive that
+      // decode: it can never be a faithful original, no text edit applies to it, and a store
+      // of compiled tools held this way exhausts the heap. It stays out, named.
+      if (isBinaryFile(from)) {
+        unstageable.push({ path: logical, reason: READ_ONLY_BINARY });
+        continue;
+      }
       const staged = path.posix.join(stagedDir, relative);
       const to = path.join(root, staged);
       // Following links means `from` can be any file in a foreign store, so a store this
@@ -174,6 +185,27 @@ function entryKind(dir, entry) {
 
 const SKILL_FILENAME = "SKILL.md";
 
+/** Version-control internals: never skill content, so never walked, copied, or read. */
+const VCS_ENTRIES = new Set([".git", ".hg", ".svn"]);
+
+/** Bytes sniffed for a NUL: git's own test for "not text" (xdiff `buffer_is_binary`). */
+const BINARY_SNIFF_BYTES = 8000;
+
+/** True when the file's first bytes hold a NUL; a file that cannot be read is left to the copy's own handling. */
+function isBinaryFile(file) {
+  let fd = null;
+  try {
+    fd = fs.openSync(file, "r");
+    const head = Buffer.alloc(BINARY_SNIFF_BYTES);
+    const read = fs.readSync(fd, head, 0, BINARY_SNIFF_BYTES, 0);
+    return head.subarray(0, read).includes(0);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
 function isFile(file) {
   try {
     return fs.statSync(file).isFile();
@@ -209,6 +241,12 @@ function walkFiles(dir, prefix = "", confineTo = null, confined = [], searchPath
   };
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     const relative = prefix ? path.posix.join(prefix, entry.name) : entry.name;
+    // A nested object store is pruned, never descended into: it is not the memory surface,
+    // and walking it is how staging copied a whole repository's history (#75).
+    if (VCS_ENTRIES.has(entry.name)) {
+      confined.push({ relative, reason: READ_ONLY_VCS });
+      continue;
+    }
     // Follow symlinks: a skills directory is commonly a set of links into a shared
     // library, and those are the files the harness loads. Staging copies what it finds,
     // so an edit lands in the staging copy and never writes through a link.
@@ -251,6 +289,9 @@ function walkFiles(dir, prefix = "", confineTo = null, confined = [], searchPath
 const READ_ONLY_OUTSIDE_REPO = "resolves outside the repository";
 const READ_ONLY_UNREADABLE = "could not be read when the staging copy was built";
 const READ_ONLY_UNWRITABLE = "resolves to a location that cannot be written";
+/** Not the memory surface, so staging leaves it out: a nested object store, or a binary file. */
+export const READ_ONLY_VCS = "is version-control internals, not skill content";
+export const READ_ONLY_BINARY = "is a binary file, not text an edit can apply to";
 /** A configured `skillSearchPaths` root: read-only in every scope, never subject to `allowExternal`. */
 export const READ_ONLY_SEARCH_PATH = "resolves inside a configured skillSearchPaths root";
 
